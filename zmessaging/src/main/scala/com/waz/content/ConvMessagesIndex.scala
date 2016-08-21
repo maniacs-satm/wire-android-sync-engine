@@ -20,6 +20,7 @@ package com.waz.content
 import com.waz.ZLog._
 import com.waz.api.Message
 import com.waz.api.Message.Status
+import com.waz.content.ConvMessagesIndex._
 import com.waz.model.MessageData.MessageDataDao
 import com.waz.model._
 import com.waz.threading.{CancellableFuture, SerialDispatchQueue}
@@ -32,14 +33,14 @@ import scala.concurrent.Future
 import scala.concurrent.duration._
 
 class ConvMessagesIndex(conv: ConvId, messages: MessagesStorage, selfUserId: UserId, users: UsersStorage,
-    convs: ConversationStorage, msgAndLikes: MessageAndLikesStorage, storage: ZmsDatabase) {
+    convs: ConversationStorage, msgAndLikes: MessageAndLikesStorage, storage: ZmsDatabase) { self =>
 
   private implicit val tag: LogTag = s"ConvMessagesIndex_$conv"
 
   import com.waz.utils.events.EventContext.Implicits.global
   private implicit val dispatcher = new SerialDispatchQueue(name = "ConvMessagesIndex")
 
-  private val indexUpdated = EventStream[Instant]() // will send timestamp after index is updated in db
+  private val indexChanged = EventStream[Change]()
   private val lastLocalMessageByType = new mutable.HashMap[Message.Type, MessageData]
   private var firstMessage = Option.empty[MessageData]
 
@@ -53,6 +54,8 @@ class ConvMessagesIndex(conv: ConvId, messages: MessagesStorage, selfUserId: Use
   }
 
   object signals {
+    val indexChanged: EventStream[Change] = self.indexChanged
+
     val lastReadTime: Signal[Instant] = sources.lastReadTime
     val failedCount: Signal[Int] = sources.failedCount
     val lastMissedCall: Signal[Option[MessageId]] = Signal(sources.lastReadTime, sources.missedCall).map { case (time, msg) => msg.filter(_.time.isAfter(time)).map(_.id) }
@@ -62,11 +65,11 @@ class ConvMessagesIndex(conv: ConvId, messages: MessagesStorage, selfUserId: Use
 
     val unreadCount = for {
       time <- sources.lastReadTime
-      _ <- Signal.wrap(Instant.now, indexUpdated).throttle(500.millis)
+      _ <- Signal.wrap(Instant.now, indexChanged.map(_.time)).throttle(500.millis)
       unread <- Signal.future(messages.countUnread(conv, time))
     } yield unread
 
-    val messagesCursor: Signal[MessagesCursor] = new RefreshingSignal(loadCursor, indexUpdated)
+    val messagesCursor: Signal[MessagesCursor] = new RefreshingSignal(loadCursor, indexChanged)
   }
 
   import sources._
@@ -128,7 +131,7 @@ class ConvMessagesIndex(conv: ConvId, messages: MessagesStorage, selfUserId: Use
 
     removeLast(_.id == msg.id)
 
-    indexUpdated ! Instant.now
+    indexChanged ! Removed(msg)
   }
 
   private[content] def delete(upTo: Instant = Instant.MAX): Future[Unit] = init map { _ =>
@@ -140,7 +143,7 @@ class ConvMessagesIndex(conv: ConvId, messages: MessagesStorage, selfUserId: Use
 
     removeLast(!_.time.isAfter(upTo))
 
-    indexUpdated ! Instant.now
+    indexChanged ! RemovedOlder(upTo)
   }
 
   private def removeLast(f: MessageData => Boolean) = {
@@ -182,7 +185,7 @@ class ConvMessagesIndex(conv: ConvId, messages: MessagesStorage, selfUserId: Use
 
       updateLast(msgs)
 
-      indexUpdated ! Instant.now
+      indexChanged ! Added(msgs)
     }
   }
 
@@ -206,8 +209,8 @@ class ConvMessagesIndex(conv: ConvId, messages: MessagesStorage, selfUserId: Use
 
       updateLast(updates.view.map(_._2))
 
-      if (updates.exists { case (prev, up) => prev.convId == conv && (prev.time != up.time || !prev.hasSameContentType(up)) })
-        indexUpdated ! Instant.now()
+      val orderUpdates = updates.filter { case (prev, up) => prev.convId == conv && (prev.time != up.time || !prev.hasSameContentType(up)) }
+      if (orderUpdates.nonEmpty) indexChanged ! Updated(orderUpdates)
     }
   }
 
@@ -224,4 +227,16 @@ class ConvMessagesIndex(conv: ConvId, messages: MessagesStorage, selfUserId: Use
 
   private def updateLastSent(last: MessageData): Unit =
     lastSentMessage.mutate(_.filter(m => m.id != last.id && m.time.isAfter(last.time)).orElse(Some(last)))
+}
+
+object ConvMessagesIndex {
+
+  sealed trait Change {
+    val time: Instant = Instant.now
+  }
+  case class Added(msgs: Seq[MessageData]) extends Change
+  case class Removed(msg: MessageData) extends Change
+  case class RemovedOlder(clearTimestamp: Instant) extends Change
+  case class Updated(updates: Seq[(MessageData, MessageData)]) extends Change
+
 }

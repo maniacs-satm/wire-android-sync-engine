@@ -52,6 +52,8 @@ class MessagesCursor(conv: ConvId, cursor: Cursor, override val lastReadIndex: I
   private val messages = new LruCache[MessageId, MessageAndLikes](WindowSize * 2)
   private val windowLoader = new WindowLoader(cursor)
 
+  val createTime = Instant.now()
+
   override def size = cursor.getCount
 
   private val subs = Seq (
@@ -117,17 +119,21 @@ class MessagesCursor(conv: ConvId, cursor: Cursor, override val lastReadIndex: I
 
   private var prevWindow = new IndexWindow(0, IndexedSeq.empty)
 
-  /** Returns message at given index, will block if message data is not yet available for given index. */
-  override def apply(index: Int): MessageAndLikes = { // implementation note: avoid all allocations on the happy path
+  private def loadWindow(index: Int) = {
     Threading.assertUiThread()
 
     if (index < 0 || index >= size)
       throw new IndexOutOfBoundsException(s"invalid message index: $index, available count: $size")
 
     val windowFuture = windowLoader(index)
-    val window =
-      if (windowFuture.value.isDefined && windowFuture.value.get.isSuccess) windowFuture.value.get.get
-      else logTime(s"loading window for index: $index")(Await.result(windowFuture, 5.seconds))
+
+    if (windowFuture.value.isDefined && windowFuture.value.get.isSuccess) windowFuture.value.get.get
+    else logTime(s"loading window for index: $index")(Await.result(windowFuture, 5.seconds))
+  }
+
+  /** Returns message at given index, will block if message data is not yet available for given index. */
+  override def apply(index: Int): MessageAndLikes = { // implementation note: avoid all allocations on the happy path
+    val window = loadWindow(index)
 
     if (! window.contains(index)) {
       HockeyApp.saveException(new RuntimeException(s"cursor window loading failed, requested index: $index, got window with offset: ${window.offset} and size: ${window.msgs.size}"), "")
@@ -153,6 +159,16 @@ class MessagesCursor(conv: ConvId, cursor: Cursor, override val lastReadIndex: I
         }
       }
     }
+  }
+
+  def getEntries(offset: Int, count: Int): Seq[Entry] = {
+    val end = math.min(size, offset + count)
+    val window = loadWindow(offset + count / 2)
+
+    if (! window.contains(offset) || !window.contains(end - 1))
+      HockeyApp.saveException(new RuntimeException(s"cursor window loading failed, requested [$offset, $end), got window with offset: ${window.offset} and size: ${window.msgs.size}"), "")
+
+    window.msgs.slice(offset - window.offset, end - window.offset)
   }
 }
 
