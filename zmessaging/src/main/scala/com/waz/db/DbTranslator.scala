@@ -19,6 +19,7 @@ package com.waz.db
 
 import java.io.File
 import java.util.Date
+import java.util.concurrent.TimeUnit
 
 import android.content.ContentValues
 import android.database.Cursor
@@ -30,6 +31,7 @@ import org.json.{JSONArray, JSONObject}
 import org.threeten.bp.Instant
 
 import scala.collection.generic.CanBuild
+import scala.concurrent.duration.FiniteDuration
 import scala.language.higherKinds
 
 abstract class DbTranslator[T] {
@@ -87,6 +89,12 @@ object DbTranslator {
     override def save(value: Instant, name: String, values: ContentValues): Unit = values.put(name, java.lang.Long.valueOf(value.toEpochMilli))
     override def bind(value: Instant, index: Int, stmt: SQLiteProgram): Unit = stmt.bindLong(index, value.toEpochMilli)
     override def literal(value: Instant): String = value.toEpochMilli.toString
+  }
+  implicit object FiniteDurationTranslator extends DbTranslator[FiniteDuration] {
+    override def load(cursor: Cursor, index: Int): FiniteDuration = FiniteDuration(cursor.getLong(index), TimeUnit.MILLISECONDS)
+    override def save(value: FiniteDuration, name: String, values: ContentValues): Unit = values.put(name, java.lang.Long.valueOf(value.toMillis))
+    override def bind(value: FiniteDuration, index: Int, stmt: SQLiteProgram): Unit = stmt.bindLong(index, value.toMillis)
+    override def literal(value: FiniteDuration): String = value.toMillis.toString
   }
   implicit object PhoneNumberTranslator extends DbTranslator[PhoneNumber] {
     override def load(cursor: Cursor, index: Int): PhoneNumber = PhoneNumber(cursor.getString(index))

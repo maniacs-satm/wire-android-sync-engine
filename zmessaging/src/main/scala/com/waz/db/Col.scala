@@ -29,6 +29,7 @@ import com.waz.utils.{JsonDecoder, JsonEncoder}
 import org.threeten.bp.Instant
 
 import scala.collection.generic._
+import scala.concurrent.duration.FiniteDuration
 import scala.language.higherKinds
 
 case class Col[A](name: String, sqlType: String, modifiers: String = "")(implicit translator: DbTranslator[A]) {
@@ -104,6 +105,7 @@ object Col {
   def phoneNumber(name: Symbol, modifiers: String = "") = Col[PhoneNumber](name.name, "TEXT", modifiers)
   def emailAddress(name: Symbol, modifiers: String = "") = Col[EmailAddress](name.name, "TEXT", modifiers)
   def date(name: Symbol, modifiers: String = "") = Col[Date](name.name, "INTEGER", modifiers)
+  def finiteDuration(name: Symbol, modifiers: String = "") = Col[FiniteDuration](name.name, "INTEGER", modifiers)
   def timestamp(name: Symbol, modifiers: String = "") = Col[Instant](name.name, "INTEGER", modifiers)
   def long(name: Symbol, modifiers: String = "") = Col[Long](name.name, "INTEGER", modifiers)
   def double(name: Symbol, modifiers: String = "") = Col[Double](name.name, "REAL", modifiers)

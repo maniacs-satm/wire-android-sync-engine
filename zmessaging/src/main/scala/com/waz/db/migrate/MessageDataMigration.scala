@@ -96,6 +96,11 @@ object MessageDataMigration {
     }
   }
 
+  lazy val v76 = { implicit db: SQLiteDatabase =>
+    db.execSQL("ALTER TABLE Messages ADD COLUMN ephemeral INTEGER")
+    db.execSQL("ALTER TABLE Messages ADD COLUMN expiry_time INTEGER")
+  }
+
   object Columns {
 
     object v68 {

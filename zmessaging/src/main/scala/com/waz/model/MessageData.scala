@@ -39,6 +39,7 @@ import org.json.JSONObject
 import org.threeten.bp.Instant
 
 import scala.collection.breakOut
+import scala.concurrent.duration.FiniteDuration
 
 case class MessageData(id: MessageId,
                        convId: ConvId,
@@ -54,7 +55,9 @@ case class MessageData(id: MessageId,
                        state: MessageState = Message.Status.SENT,
                        time: Instant = Instant.now,
                        localTime: Instant = MessageData.UnknownInstant,
-                       editTime: Instant = MessageData.UnknownInstant
+                       editTime: Instant = MessageData.UnknownInstant,
+                       ephemeralTimeout: Option[FiniteDuration] = None,
+                       expiryTime: Option[Instant] = None  // local expiration time
                       ) {
 
   def getContent(index: Int) = {
@@ -203,7 +206,7 @@ object MessageContent extends ((Message.Part.Type, String, Option[MediaAssetData
   }
 }
 
-object MessageData extends ((MessageId, ConvId, Message.Type, UserId, Seq[MessageContent], Seq[GenericMessage], Boolean, Set[UserId], Option[UserId], Option[String], Option[String], Message.Status, Instant, Instant, Instant) => MessageData) {
+object MessageData extends ((MessageId, ConvId, Message.Type, UserId, Seq[MessageContent], Seq[GenericMessage], Boolean, Set[UserId], Option[UserId], Option[String], Option[String], Message.Status, Instant, Instant, Instant, Option[FiniteDuration], Option[Instant]) => MessageData) {
   val Empty = new MessageData(MessageId(""), ConvId(""), Message.Type.UNKNOWN, UserId(""))
   val Deleted = new MessageData(MessageId(""), ConvId(""), Message.Type.UNKNOWN, UserId(""), state = Message.Status.DELETED)
   val UnknownInstant = Instant.EPOCH
@@ -300,10 +303,12 @@ object MessageData extends ((MessageId, ConvId, Message.Type, UserId, Seq[Messag
     val Time = timestamp('time)(_.time)
     val LocalTime = timestamp('local_time)(_.localTime)
     val EditTime = timestamp('edit_time)(_.editTime)
+    val Ephemeral = opt(finiteDuration('ephemeral))(_.ephemeralTimeout)
+    val ExpiryTime = opt(timestamp('expiry_time))(_.expiryTime)
 
     override val idCol = Id
 
-    override val table = Table("Messages", Id, Conv, Type, User, Content, Protos, Time, LocalTime, FirstMessage, Members, Recipient, Email, Name, State, ContentSize, EditTime)
+    override val table = Table("Messages", Id, Conv, Type, User, Content, Protos, Time, LocalTime, FirstMessage, Members, Recipient, Email, Name, State, ContentSize, EditTime, Ephemeral, ExpiryTime)
 
     override def onCreate(db: SQLiteDatabase): Unit = {
       super.onCreate(db)
@@ -311,7 +316,7 @@ object MessageData extends ((MessageId, ConvId, Message.Type, UserId, Seq[Messag
     }
 
     override def apply(implicit cursor: Cursor): MessageData =
-      MessageData(Id, Conv, Type, User, Content, Protos, FirstMessage, Members, Recipient, Email, Name, State, Time, LocalTime, EditTime)
+      MessageData(Id, Conv, Type, User, Content, Protos, FirstMessage, Members, Recipient, Email, Name, State, Time, LocalTime, EditTime, Ephemeral, ExpiryTime)
 
     def deleteForConv(id: ConvId)(implicit db: SQLiteDatabase) = delete(Conv, id)
 
@@ -362,6 +367,15 @@ object MessageData extends ((MessageId, ConvId, Message.Type, UserId, Seq[Messag
 
     def findMessagesFrom(conv: ConvId, time: Instant)(implicit db: SQLiteDatabase) =
       iterating(db.query(table.name, null, s"${Conv.name} = '$conv' and ${Time.name} >= ${time.toEpochMilli}", null, null, null, s"${Time.name} ASC"))
+
+    def findExpired(time: Instant = Instant.now)(implicit db: SQLiteDatabase) =
+      iterating(db.query(table.name, null, s"${ExpiryTime.name} IS NOT NULL and ${ExpiryTime.name} <= ${time.toEpochMilli}", null, null, null, s"${ExpiryTime.name} ASC"))
+
+    def findExpiring()(implicit db: SQLiteDatabase) =
+      iterating(db.query(table.name, null, s"${ExpiryTime.name} IS NOT NULL", null, null, null, s"${ExpiryTime.name} ASC"))
+
+    def findEphemeral(conv: ConvId)(implicit db: SQLiteDatabase) =
+      iterating(db.query(table.name, null, s"${Conv.name} = '$conv' and ${Ephemeral.name} IS NOT NULL and ${ExpiryTime.name} IS NULL", null, null, null, s"${Time.name} ASC"))
 
     private val IndexColumns = Array(Id.name, Time.name)
     def msgIndexCursor(conv: ConvId)(implicit db: SQLiteDatabase) = db.query(table.name, IndexColumns, s"${Conv.name} = '$conv'", null, null, null, s"${Time.name} ASC")
