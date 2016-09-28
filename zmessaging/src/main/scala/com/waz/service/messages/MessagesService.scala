@@ -127,6 +127,53 @@ class MessagesService(selfUserId: UserId, val content: MessagesContentUpdater, e
     val id = MessageId.fromUid(event.id)
     val convId = conv.id
 
+    def content(id: MessageId, msgContent: Any, from: UserId, time: Instant, proto: GenericMessage): MessageData = msgContent match {
+      case Text(text, mentions, links) =>
+        val (tpe, content) = MessageData.messageContent(text, mentions, links)
+        MessageData(id, conv.id, tpe, from, content, time = time, localTime = event.localTime.instant, protos = Seq(proto))
+      case Knock(hotKnock) =>
+        MessageData(id, conv.id, Message.Type.KNOCK, from, time = time, localTime = event.localTime.instant, protos = Seq(proto))
+      case Reaction(_, _) => MessageData.Empty
+      case Asset(_, _, UploadCancelled) => MessageData.Empty
+      case Asset(Some(Original(Mime.Video(), _, _, _, _)), _, _) =>
+        MessageData(id, convId, Message.Type.VIDEO_ASSET, from, time = time, localTime = event.localTime.instant, protos = Seq(proto))
+      case Asset(Some(Original(Mime.Audio(), _, _, _, _)), _, _) =>
+        MessageData(id, convId, Message.Type.AUDIO_ASSET, from, time = time, localTime = event.localTime.instant, protos = Seq(proto))
+      case Asset(_, _, _) =>
+        MessageData(id, convId, Message.Type.ANY_ASSET, from, time = time, localTime = event.localTime.instant, protos = Seq(proto))
+      case Location(_, _, _, _) =>
+        MessageData(id, convId, Message.Type.LOCATION, from, time = time, localTime = event.localTime.instant, protos = Seq(proto))
+      case LastRead(remoteId, timestamp) => MessageData.Empty
+      case Cleared(remoteId, timestamp) => MessageData.Empty
+      case MsgDeleted(_, _) => MessageData.Empty
+      case MsgRecall(_) => MessageData.Empty
+      case MsgEdit(_, _) => MessageData.Empty
+      case Receipt(_) => MessageData.Empty
+      case Ephemeral(expiry, ct) =>
+        content(id, ct, from, time, proto).copy(ephemeralTimeout = Some(expiry))
+      case _ =>
+        error(s"unexpected generic message content: $msgContent")
+        // TODO: this message should be processed again after app update, maybe future app version will understand it
+        MessageData(id, conv.id, Message.Type.UNKNOWN, from, time = time, localTime = event.localTime.instant, protos = Seq(proto))
+    }
+
+    def assetContent(id: MessageId, ct: Any, from: UserId, time: Instant, msg: GenericMessage): MessageData = ct match {
+      case asset @ Asset(Some(Original(Mime.Video(), _, _, _, _)), _, _) =>
+        MessageData(id, convId, Message.Type.VIDEO_ASSET, from, time = time, localTime = event.localTime.instant, protos = Seq(msg))
+      case asset @ Asset(Some(Original(Mime.Audio(), _, _, _, _)), _, _) =>
+        MessageData(id, convId, Message.Type.AUDIO_ASSET, from, time = time, localTime = event.localTime.instant, protos = Seq(msg))
+      case asset: Asset =>
+        MessageData(id, convId, Message.Type.ANY_ASSET, from, time = time, localTime = event.localTime.instant, protos = Seq(msg))
+      case im: ImageAsset =>
+        MessageData(id, convId, Message.Type.ASSET, from, time = time, localTime = event.localTime.instant, protos = Seq(msg))
+      case Ephemeral(expiry, ect) =>
+        assetContent(id, ect, from, time, msg).copy(ephemeralTimeout = Some(expiry))
+      case _ =>
+        error(s"unexpected generic asset content: $msg")
+        // TODO: this message should be processed again after app update, maybe future app version will understand it
+        MessageData(id, conv.id, Message.Type.UNKNOWN, from, time = time, localTime = event.localTime.instant, protos = Seq(msg))
+    }
+
     event match {
       case ConnectRequestEvent(_, _, time, from, text, recipient, name, email) =>
         MessageData(id, convId, Message.Type.CONNECT_REQUEST, from, MessageData.textContent(text), recipient = Some(recipient), email = email, name = Some(name), time = time.instant, localTime = event.localTime.instant)
@@ -145,49 +192,9 @@ class MessagesService(selfUserId: UserId, val content: MessagesContentUpdater, e
       case OtrErrorEvent(_, _, time, from, otrError) =>
         MessageData (id, conv.id, Message.Type.OTR_ERROR, from, time = time.instant, localTime = event.localTime.instant)
       case GenericMessageEvent(_, _, time, from, proto @ GenericMessage(uid, msgContent)) =>
-        val id = MessageId(uid.str)
-        msgContent match {
-          case Text(text, mentions, links) =>
-            val (tpe, content) = MessageData.messageContent(text, mentions, links)
-            MessageData(id, conv.id, tpe, from, content, time = time.instant, localTime = event.localTime.instant, protos = Seq(proto))
-          case Knock(hotKnock) =>
-            MessageData(id, conv.id, Message.Type.KNOCK, from, time = time.instant, localTime = event.localTime.instant, protos = Seq(proto))
-          case Reaction(_, _) => MessageData.Empty
-          case Asset(_, _, UploadCancelled) => MessageData.Empty
-          case Asset(Some(Original(Mime.Video(), _, _, _, _)), _, _) =>
-            MessageData(id, convId, Message.Type.VIDEO_ASSET, from, time = time.instant, localTime = event.localTime.instant, protos = Seq(proto))
-          case Asset(Some(Original(Mime.Audio(), _, _, _, _)), _, _) =>
-            MessageData(id, convId, Message.Type.AUDIO_ASSET, from, time = time.instant, localTime = event.localTime.instant, protos = Seq(proto))
-          case Asset(_, _, _) =>
-            MessageData(id, convId, Message.Type.ANY_ASSET, from, time = time.instant, localTime = event.localTime.instant, protos = Seq(proto))
-          case Location(_, _, _, _) =>
-            MessageData(id, convId, Message.Type.LOCATION, from, time = time.instant, localTime = event.localTime.instant, protos = Seq(proto))
-          case LastRead(remoteId, timestamp) => MessageData.Empty
-          case Cleared(remoteId, timestamp) => MessageData.Empty
-          case MsgDeleted(_, _) => MessageData.Empty
-          case MsgRecall(_) => MessageData.Empty
-          case MsgEdit(_, _) => MessageData.Empty
-          case Receipt(_) => MessageData.Empty
-          case _ =>
-            error(s"unexpected generic message content: $msgContent")
-            // TODO: this message should be processed again after app update, maybe future app version will understand it
-            MessageData(id, conv.id, Message.Type.UNKNOWN, from, time = time.instant, localTime = event.localTime.instant, protos = Seq(proto))
-        }
-      case GenericAssetEvent(_, _, time, from, msg, dataId, data) =>
-        msg match {
-          case GenericMessage(assetId, asset @ Asset(Some(Original(Mime.Video(), _, _, _, _)), _, _)) =>
-            MessageData(MessageId(assetId.str), convId, Message.Type.VIDEO_ASSET, from, time = time.instant, localTime = event.localTime.instant, protos = Seq(msg))
-          case GenericMessage(assetId, asset @ Asset(Some(Original(Mime.Audio(), _, _, _, _)), _, _)) =>
-            MessageData(MessageId(assetId.str), convId, Message.Type.AUDIO_ASSET, from, time = time.instant, localTime = event.localTime.instant, protos = Seq(msg))
-          case GenericMessage(assetId, asset: Asset) =>
-            MessageData(MessageId(assetId.str), convId, Message.Type.ANY_ASSET, from, time = time.instant, localTime = event.localTime.instant, protos = Seq(msg))
-          case GenericMessage(assetId, im: ImageAsset) =>
-            MessageData(MessageId(assetId.str), convId, Message.Type.ASSET, from, time = time.instant, localTime = event.localTime.instant, protos = Seq(msg))
-          case _ =>
-            error(s"unexpected generic asset content: $msg")
-            // TODO: this message should be processed again after app update, maybe future app version will understand it
-            MessageData(id, conv.id, Message.Type.UNKNOWN, from, time = time.instant, localTime = event.localTime.instant, protos = Seq(msg))
-        }
+        content(MessageId(uid.str), msgContent, from, time.instant, proto)
+      case GenericAssetEvent(_, _, time, from, proto @ GenericMessage(uid, msgContent), dataId, data) =>
+        assetContent(MessageId(uid.str), msgContent, from, time.instant, proto)
       case _ =>
         warn(s"Unexpected event for addMessage: $event")
         MessageData.Empty

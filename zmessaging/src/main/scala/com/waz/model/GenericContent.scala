@@ -31,12 +31,17 @@ import org.threeten.bp.{Duration, Instant}
 
 import scala.PartialFunction.condOpt
 import scala.collection.breakOut
+import scala.concurrent.duration.FiniteDuration
 
 trait GenericContent[-T] {
   def set(msg: GenericMessage): T => GenericMessage
 }
 
 object GenericContent {
+
+  trait EphemeralContent[-T] {
+    def set(eph: Ephemeral): T => Ephemeral
+  }
 
   type Asset = Messages.Asset
   implicit object Asset extends GenericContent[Asset] {
@@ -279,6 +284,9 @@ object GenericContent {
       }
     }
   }
+  implicit object EphemeralAsset extends EphemeralContent[Asset] {
+    override def set(eph: Ephemeral): (Asset) => Ephemeral = eph.setAsset
+  }
 
   type ImageAsset = Messages.ImageAsset
   implicit object ImageAsset extends GenericContent[ImageAsset] {
@@ -300,6 +308,9 @@ object GenericContent {
         key foreach { key => a.otrKey = key.bytes }
         sha foreach { sha => a.sha256 = sha.bytes }
       }
+  }
+  implicit object EphemeralImageAsset extends EphemeralContent[ImageAsset] {
+    override def set(eph: Ephemeral): (ImageAsset) => Ephemeral = eph.setImage
   }
 
   type Mention = Messages.Mention
@@ -405,6 +416,9 @@ object GenericContent {
 
     def unapply(arg: Knock): Option[Boolean] = Some(arg.hotKnock)
   }
+  implicit object EphemeralKnock extends EphemeralContent[Knock] {
+    override def set(eph: Ephemeral): (Knock) => Ephemeral = eph.setKnock
+  }
 
   type Text = Messages.Text
   implicit object Text extends GenericContent[Text] {
@@ -422,6 +436,9 @@ object GenericContent {
 
     def unapply(proto: Text): Option[(String, Map[UserId, String], Seq[LinkPreview])] =
       Some((proto.content, proto.mention.map(m => UserId(m.userId) -> m.userName).toMap, proto.linkPreview.toSeq))
+  }
+  implicit object EphemeralText extends EphemeralContent[Text] {
+    override def set(eph: Ephemeral): (Text) => Ephemeral = eph.setText
   }
 
   type MsgEdit = Messages.MessageEdit
@@ -509,6 +526,9 @@ object GenericContent {
     def unapply(l: Location): Option[(Float, Float, Option[String], Option[Int])] =
       Some((l.longitude, l.latitude, Option(l.name).filter(_.nonEmpty), Option(l.zoom).filter(_ != 0)))
   }
+  implicit object EphemeralLocation extends EphemeralContent[Location] {
+    override def set(eph: Ephemeral): (Location) => Ephemeral = eph.setLocation
+  }
 
   type Receipt = Messages.Confirmation
   implicit object Receipt extends GenericContent[Receipt] {
@@ -536,6 +556,28 @@ object GenericContent {
         key <- Option(e.otrKey)
         sha <- Option(e.sha256)
       } yield (AESKey(key), Sha256(sha))
+  }
+
+  type Ephemeral = Messages.Ephemeral
+  implicit object Ephemeral extends GenericContent[Ephemeral] {
+    import scala.concurrent.duration._
+    override def set(msg: GenericMessage): (Ephemeral) => GenericMessage = msg.setEphemeral
+
+    def apply[Content: EphemeralContent](expiry: FiniteDuration, content: Content) = returning(new Messages.Ephemeral) { proto =>
+      proto.expireAfterMillis = expiry.toMillis
+      implicitly[EphemeralContent[Content]].set(proto)(content)
+    }
+
+    def unapply(proto: Ephemeral): Option[(FiniteDuration, Any)] = Some((proto.expireAfterMillis.millis, content(proto)))
+
+    def content(e: Ephemeral) = e.getContentCase match {
+      case Messages.Ephemeral.TEXT_FIELD_NUMBER => e.getText
+      case Messages.Ephemeral.ASSET_FIELD_NUMBER => e.getAsset
+      case Messages.Ephemeral.IMAGE_FIELD_NUMBER => e.getImage
+      case Messages.Ephemeral.KNOCK_FIELD_NUMBER => e.getKnock
+      case Messages.Ephemeral.LOCATION_FIELD_NUMBER => e.getLocation
+      case _ => Unknown
+    }
   }
 
   case object Unknown
